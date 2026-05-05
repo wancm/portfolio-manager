@@ -2,7 +2,6 @@ package shared
 
 import (
 	"encoding/json"
-	"flag"
 	"log/slog"
 	"os"
 	"time"
@@ -11,19 +10,14 @@ import (
 var AppLogger = newLogger()
 
 func newLogger() *slog.Logger {
-	logFmt := flag.String("log-format", envOr("LOG_FORMAT", "text"), "log format: text or json (env: LOG_FORMAT)")
-	flag.Parse()
-
 	var handler slog.Handler
-	switch *logFmt {
-	case "json":
+	if os.Getenv("LOG_FORMAT") == "json" {
 		handler = slog.NewJSONHandler(os.Stdout, nil)
-	default:
+	} else {
 		handler = slog.NewTextHandler(os.Stdout, nil)
 	}
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
-
 	return logger
 }
 
@@ -40,11 +34,10 @@ func UnixToTime(unixSec int64) time.Time {
 }
 
 // ToJsonIndent 将任意结构体序列化为带缩进的 JSON 字符串，便于日志记录
-func ToJsonIndent(v any) string {
+func ToJsonIndent(v any) (string, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-
-	return string(data)
+	return string(data), nil
 }

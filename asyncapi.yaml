@@ -1,0 +1,264 @@
+asyncapi: 3.1.0
+info:
+  title: Portfolio Manager WebSocket API
+  version: 1.0.0
+  description: |
+    Request/response WebSocket API for the portfolio-manager service.
+    Clients (e.g. trader-bot, trader-bot-web) send a typed JSON frame; the server
+    replies on the same connection. All messages carry `request_id` for correlation.
+
+    **No auth, loopback only** — binding to localhost; do not expose externally.
+
+defaultContentType: application/json
+
+servers:
+  direct:
+    host: localhost:8081
+    pathname: /ws
+    protocol: ws
+    description: Direct connection to portfolio-manager (backend-to-backend).
+
+  viteProxy:
+    host: localhost:5173
+    pathname: /ws
+    protocol: ws
+    description: Via Vite dev-server proxy (for trader-bot-web at :5173).
+
+channels:
+  ws:
+    address: /ws
+    description: >
+      Single persistent WebSocket channel. All client requests and all server
+      responses flow over this one connection per client.
+    messages:
+      # ── client → server ──────────────────────────────────────────────────────
+      getPortfolioState:
+        $ref: '#/components/messages/GetPortfolioState'
+      validateOrder:
+        $ref: '#/components/messages/ValidateOrder'
+      # ── server → client ──────────────────────────────────────────────────────
+      portfolioStateResponse:
+        $ref: '#/components/messages/PortfolioStateResponse'
+      validationResponse:
+        $ref: '#/components/messages/ValidationResponse'
+      errorResponse:
+        $ref: '#/components/messages/ErrorResponse'
+
+operations:
+  # "receive" = the server (this application) receives these frames from the client
+  receiveRequest:
+    action: receive
+    summary: Client sends a typed request frame.
+    channel:
+      $ref: '#/channels/ws'
+    messages:
+      - $ref: '#/channels/ws/messages/getPortfolioState'
+      - $ref: '#/channels/ws/messages/validateOrder'
+
+  # "send" = the server (this application) sends these frames to the client
+  sendResponse:
+    action: send
+    summary: Server replies with a typed response frame.
+    channel:
+      $ref: '#/channels/ws'
+    messages:
+      - $ref: '#/channels/ws/messages/portfolioStateResponse'
+      - $ref: '#/channels/ws/messages/validationResponse'
+      - $ref: '#/channels/ws/messages/errorResponse'
+
+components:
+  messages:
+    GetPortfolioState:
+      name: get_portfolio_state
+      title: Get Portfolio State
+      summary: Query current position and account balance for a given symbol.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/GetPortfolioStatePayload'
+
+    ValidateOrder:
+      name: validate_order
+      title: Validate Order
+      summary: >
+        Check whether a proposed order passes all risk rules.
+        Returns allowed/rejected and an optional adjusted quantity.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ValidateOrderPayload'
+
+    PortfolioStateResponse:
+      name: portfolio_state_response
+      title: Portfolio State Response
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/PortfolioStateResponsePayload'
+
+    ValidationResponse:
+      name: validation_response
+      title: Validation Response
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ValidationResponsePayload'
+
+    ErrorResponse:
+      name: error
+      title: Error Response
+      summary: >
+        Returned when the server cannot process the request:
+        unknown type, malformed JSON, or invalid action value.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ErrorResponsePayload'
+
+  schemas:
+    # ── Request payloads ───────────────────────────────────────────────────────
+
+    GetPortfolioStatePayload:
+      type: object
+      required: [type, request_id, user_alias, symbol]
+      properties:
+        type:
+          type: string
+          const: get_portfolio_state
+        request_id:
+          type: string
+          format: uuid
+          description: Caller-generated UUID used to correlate the response.
+          examples:
+            - 4f8b3e2a-11c4-4d2e-b8f1-3a9e0c7d5f62
+        user_alias:
+          type: string
+          maxLength: 50
+          examples:
+            - wancm
+        symbol:
+          type: string
+          maxLength: 20
+          examples:
+            - EURUSD
+
+    ValidateOrderPayload:
+      type: object
+      required: [type, request_id, user_alias, symbol, action, quantity, price]
+      properties:
+        type:
+          type: string
+          const: validate_order
+        request_id:
+          type: string
+          format: uuid
+          examples:
+            - 9c2a1e4f-33b7-4a8d-b0f2-6e1d0c8a7b35
+        user_alias:
+          type: string
+          maxLength: 50
+          examples:
+            - wancm
+        symbol:
+          type: string
+          maxLength: 20
+          examples:
+            - EURUSD
+        action:
+          type: string
+          enum: [BUY, SELL]
+          description: Direction of the order. Only BUY and SELL are accepted.
+        quantity:
+          type: number
+          exclusiveMinimum: 0
+          description: Number of units to trade.
+          examples:
+            - 100
+        price:
+          type: number
+          exclusiveMinimum: 0
+          description: Execution price used for notional-value risk checks.
+          examples:
+            - 1.0850
+
+    # ── Response payloads ──────────────────────────────────────────────────────
+
+    PortfolioStateResponsePayload:
+      type: object
+      required: [type, request_id, user_alias, symbol, current_position, avg_cost, max_limit, account_balance]
+      properties:
+        type:
+          type: string
+          const: portfolio_state_response
+        request_id:
+          type: string
+          format: uuid
+          description: Echoed from the request.
+        user_alias:
+          type: string
+          examples:
+            - wancm
+        symbol:
+          type: string
+          examples:
+            - EURUSD
+        current_position:
+          type: number
+          description: Units currently held for this symbol.
+          examples:
+            - 50
+        avg_cost:
+          type: number
+          description: Volume-weighted average cost of the current position.
+          examples:
+            - 1.0830
+        max_limit:
+          type: number
+          description: Per-symbol share cap from risk_config.per_symbol_max_shares.
+          examples:
+            - 200
+        account_balance:
+          type: number
+          description: Current cash balance in account_state.
+          examples:
+            - 9500.00
+
+    ValidationResponsePayload:
+      type: object
+      required: [type, request_id, allowed, reason]
+      properties:
+        type:
+          type: string
+          const: validation_response
+        request_id:
+          type: string
+          format: uuid
+          description: Echoed from the request.
+        allowed:
+          type: boolean
+          description: True if the order passes all risk checks.
+        reason:
+          type: string
+          description: Human-readable result summary.
+          examples:
+            - OK
+            - exceeds symbol position limit, max additional 80.00
+        adjusted_quantity:
+          type: number
+          description: >
+            Present only when allowed=false and a smaller quantity would be
+            accepted. Callers may retry with this value.
+          examples:
+            - 80
+
+    ErrorResponsePayload:
+      type: object
+      required: [type, request_id, error]
+      properties:
+        type:
+          type: string
+          const: error
+        request_id:
+          type: string
+          description: Echoed from the request, or empty string if the request could not be parsed.
+        error:
+          type: string
+          examples:
+            - action must be BUY or SELL
+            - unknown request type: subscribe
+            - invalid JSON: unexpected end of JSON input

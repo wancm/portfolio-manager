@@ -31,53 +31,57 @@ func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, actio
 	}
 
 	// 2. 检查黑名单
-	var banned bool
-	err = r.store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM blacklist WHERE user_alias=$1 AND symbol=$2 AND banned_until > NOW())`, userAlias, symbol).Scan(&banned)
-	if err == nil && banned {
+	banned, err := r.store.IsBanned(ctx, userAlias, symbol)
+	if err != nil {
+		return false, fmt.Sprintf("blacklist error: %v", err), 0
+	}
+	if banned {
 		return false, "symbol is blacklisted", 0
 	}
 
-	// 3. 检查熔断
-	var halted bool
-	err = r.store.pool.QueryRow(ctx, `SELECT is_halted FROM risk_state WHERE user_alias=$1`, userAlias).Scan(&halted)
-	if err == nil && halted && action == "BUY" {
+	// 3. 检查熔断 (仅阻止开仓)
+	halted, err := r.store.IsHalted(ctx, userAlias)
+	if err != nil {
+		return false, fmt.Sprintf("halt check error: %v", err), 0
+	}
+	if halted && action == "BUY" {
 		return false, "trading halted due to loss limit", 0
 	}
 
 	// 4. 计算订单金额与总仓位
 	orderNotional := quantity * price
-	maxOrderNotional := state.Balance * cfg.MaxOrderPct // 简化：按可用现金比例
+	maxOrderNotional := state.Balance * cfg.MaxOrderPct
 	if orderNotional > maxOrderNotional {
 		adjQty := maxOrderNotional / price
 		return false, fmt.Sprintf("order value exceeds limit, max qty ~%.2f", adjQty), adjQty
 	}
 
 	if action == "BUY" {
-		// 5. 单标的上限
+		// 5. 单标的上限 — shares cap AND pct cap; lower binding cap holds
 		newPosition := state.Position + quantity
-		if newPosition > cfg.PerSymbolMaxShares {
-			adjQty := cfg.PerSymbolMaxShares - state.Position
-			if adjQty <= 0 {
+
+		adjByShares := cfg.PerSymbolMaxShares - state.Position
+		adjByPct := (cfg.PerSymbolMaxPct*state.Balance/price) - state.Position
+		// pick the more restrictive cap
+		adjMax := adjByShares
+		if adjByPct < adjMax {
+			adjMax = adjByPct
+		}
+
+		if newPosition*price/state.Balance > cfg.PerSymbolMaxPct || newPosition > cfg.PerSymbolMaxShares {
+			if adjMax <= 0 {
 				return false, "already at max position limit", 0
 			}
-			return false, fmt.Sprintf("exceeds symbol max shares, max additional %.2f", adjQty), adjQty
+			return false, fmt.Sprintf("exceeds symbol position limit, max additional %.2f", adjMax), adjMax
 		}
 
 		// 6. 总仓位上限
-		// 获取所有持仓市值
-		var totalMarketValue float64
-		rows, err := r.store.pool.Query(ctx, `SELECT quantity, avg_price FROM positions WHERE user_alias=$1`, userAlias)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var q, p float64
-				if err := rows.Scan(&q, &p); err == nil {
-					totalMarketValue += q * p
-				}
-			}
+		totalMarketValue, err := r.store.GetTotalMarketValue(ctx, userAlias)
+		if err != nil {
+			return false, fmt.Sprintf("market value error: %v", err), 0
 		}
 		newTotalValue := totalMarketValue + orderNotional
-		maxTotalValue := state.Balance * cfg.TotalMaxExposurePct // 这里简化，用余额代替净值
+		maxTotalValue := state.Balance * cfg.TotalMaxExposurePct
 		if newTotalValue > maxTotalValue {
 			remainingRoom := maxTotalValue - totalMarketValue
 			adjQty := remainingRoom / price
