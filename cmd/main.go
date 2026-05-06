@@ -60,6 +60,23 @@ func main() {
 	handler := portfolio.NewTraderWSHandler(store, risk, shared.AppLogger)
 	http.Handle("/ws", handler)
 
+	// 启动 Broker WebSocket 客户端
+	brokerURL := os.Getenv("BROKER_WS_URL")
+	if brokerURL == "" {
+		brokerURL = "ws://localhost:8085/ws"
+	}
+	userAlias := os.Getenv("USER_ALIAS")
+	if userAlias == "" {
+		userAlias = "wancm"
+	}
+	brokerClient := portfolio.NewBrokerWSClient(brokerURL, userAlias, store, shared.AppLogger)
+	go func() {
+		if err := brokerClient.Connect(ctx); err != nil {
+			shared.AppLogger.Error("broker client failed", "err", err)
+		}
+	}()
+
+	// 启动 Trader WebSocket 服务
 	srv := &http.Server{Addr: ":8081"}
 	go func() {
 		shared.AppLogger.Info("Portfolio Manager listening on :8081")
