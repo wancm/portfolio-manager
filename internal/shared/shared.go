@@ -21,13 +21,6 @@ func newLogger() *slog.Logger {
 	return logger
 }
 
-func envOr(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
-	}
-	return fallback
-}
-
 // UnixToTime 将 Unix 秒转换为 time.Time
 func UnixToTime(unixSec int64) time.Time {
 	return time.Unix(unixSec, 0)

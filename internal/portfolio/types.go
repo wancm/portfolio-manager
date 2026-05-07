@@ -1,5 +1,12 @@
 package portfolio
 
+const (
+	MsgGetPortfolioState = "get_portfolio_state"
+	MsgValidateOrder     = "validate_order"
+	MsgPortfolioState    = "portfolio_state_response"
+	MsgValidationResp    = "validation_response"
+)
+
 // 更新自 Broker Manager
 type AccountUpdate struct {
 	UserAlias string  `json:"user_alias"`

@@ -11,6 +11,11 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+const (
+	reconnectDelay = 5 * time.Second
+	dialTimeout    = 10 * time.Second
+)
+
 type BrokerWSClient struct {
 	url    string
 	user   string
@@ -31,7 +36,7 @@ func (c *BrokerWSClient) Connect(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(reconnectDelay):
 			// reconnect
 		}
 	}
@@ -39,7 +44,7 @@ func (c *BrokerWSClient) Connect(ctx context.Context) error {
 
 func (c *BrokerWSClient) connectAndServe(ctx context.Context) error {
 	conn, _, err := websocket.Dial(ctx, c.url, &websocket.DialOptions{
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+		HTTPClient: &http.Client{Timeout: dialTimeout},
 	})
 	if err != nil {
 		return err
@@ -60,10 +65,8 @@ func (c *BrokerWSClient) connectAndServe(ctx context.Context) error {
 	// Read loop
 	for {
 		var envelope struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"` // some messages may have nested objects
+			Type string `json:"type"`
 		}
-		// First read the raw JSON
 		_, msg, err := conn.Read(ctx)
 		if err != nil {
 			return err
@@ -76,17 +79,21 @@ func (c *BrokerWSClient) connectAndServe(ctx context.Context) error {
 		switch envelope.Type {
 		case "account_update":
 			var upd AccountUpdate
-			if err := json.Unmarshal(msg, &upd); err == nil {
-				if err := c.store.UpsertAccount(ctx, upd); err != nil {
-					c.logger.Error("upsert account", "err", err)
-				}
+			if err := json.Unmarshal(msg, &upd); err != nil {
+				c.logger.Warn("unmarshal account_update", "err", err)
+				continue
+			}
+			if err := c.store.UpsertAccount(ctx, upd); err != nil {
+				c.logger.Error("upsert account", "err", err)
 			}
 		case "position_update":
 			var upd PositionUpdate
-			if err := json.Unmarshal(msg, &upd); err == nil {
-				if err := c.store.UpsertPosition(ctx, upd); err != nil {
-					c.logger.Error("upsert position", "err", err)
-				}
+			if err := json.Unmarshal(msg, &upd); err != nil {
+				c.logger.Warn("unmarshal position_update", "err", err)
+				continue
+			}
+			if err := c.store.UpsertPosition(ctx, upd); err != nil {
+				c.logger.Error("upsert position", "err", err)
 			}
 		// future order update handling
 		default:

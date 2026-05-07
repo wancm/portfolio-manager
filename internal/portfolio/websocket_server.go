@@ -48,18 +48,18 @@ func (h *TraderWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(msg, &base); err != nil {
 			h.logger.Warn("unmarshal envelope", "err", err)
-			if err := writeError(ctx, conn, h.logger, "", "invalid JSON: "+err.Error()); err != nil {
+			if err := h.writeError(ctx, conn, "", "invalid JSON: "+err.Error()); err != nil {
 				return
 			}
 			continue
 		}
 
 		switch base.Type {
-		case "get_portfolio_state":
+		case MsgGetPortfolioState:
 			var req PortfolioStateRequest
 			if err := json.Unmarshal(msg, &req); err != nil {
 				h.logger.Warn("unmarshal get_portfolio_state", "err", err)
-				if err := writeError(ctx, conn, h.logger, base.RequestID, err.Error()); err != nil {
+				if err := h.writeError(ctx, conn, base.RequestID, err.Error()); err != nil {
 					return
 				}
 				continue
@@ -67,7 +67,7 @@ func (h *TraderWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp, err := h.store.GetPortfolioState(ctx, req.UserAlias, req.Symbol)
 			if err != nil {
 				h.logger.Error("get portfolio state", "err", err)
-				if err := writeError(ctx, conn, h.logger, req.RequestID, err.Error()); err != nil {
+				if err := h.writeError(ctx, conn, req.RequestID, err.Error()); err != nil {
 					return
 				}
 				continue
@@ -78,24 +78,24 @@ func (h *TraderWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-		case "validate_order":
+		case MsgValidateOrder:
 			var req ValidateOrderRequest
 			if err := json.Unmarshal(msg, &req); err != nil {
 				h.logger.Warn("unmarshal validate_order", "err", err)
-				if err := writeError(ctx, conn, h.logger, base.RequestID, err.Error()); err != nil {
+				if err := h.writeError(ctx, conn, base.RequestID, err.Error()); err != nil {
 					return
 				}
 				continue
 			}
-			if req.Action != "BUY" && req.Action != "SELL" {
-				if err := writeError(ctx, conn, h.logger, req.RequestID, "action must be BUY or SELL"); err != nil {
+			if req.Action != actionBuy && req.Action != actionSell {
+				if err := h.writeError(ctx, conn, req.RequestID, "action must be BUY or SELL"); err != nil {
 					return
 				}
 				continue
 			}
 			allowed, reason, adjQty := h.riskEngine.ValidateOrder(ctx, req.UserAlias, req.Symbol, req.Action, req.Quantity, req.Price)
 			resp := ValidationResponse{
-				Type:             "validation_response",
+				Type:             MsgValidationResp,
 				RequestID:        req.RequestID,
 				Allowed:          allowed,
 				Reason:           reason,
@@ -108,21 +108,21 @@ func (h *TraderWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		default:
 			h.logger.Warn("unknown trader request", "type", base.Type)
-			if err := writeError(ctx, conn, h.logger, base.RequestID, "unknown request type: "+base.Type); err != nil {
+			if err := h.writeError(ctx, conn, base.RequestID, "unknown request type: "+base.Type); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func writeError(ctx context.Context, conn *websocket.Conn, logger *slog.Logger, requestID, message string) error {
+func (h *TraderWSHandler) writeError(ctx context.Context, conn *websocket.Conn, requestID, message string) error {
 	resp := map[string]any{
 		"type":       "error",
 		"request_id": requestID,
 		"error":      message,
 	}
 	if err := wsjson.Write(ctx, conn, resp); err != nil {
-		logger.Error("write error response", "err", err)
+		h.logger.Error("write error response", "err", err)
 		return err
 	}
 	return nil

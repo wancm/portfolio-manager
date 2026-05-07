@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const defaultPerSymbolMaxShares = 200.0
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -22,7 +24,10 @@ func (s *Store) UpsertAccount(ctx context.Context, acct AccountUpdate) error {
 		 VALUES ($1,$2,$3)
 		 ON CONFLICT (user_alias) DO UPDATE SET balance=EXCLUDED.balance, equity=EXCLUDED.equity, updated_at=NOW()`,
 		acct.UserAlias, acct.Balance, acct.Equity)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert account %s: %w", acct.UserAlias, err)
+	}
+	return nil
 }
 
 func (s *Store) UpsertPosition(ctx context.Context, pos PositionUpdate) error {
@@ -31,45 +36,31 @@ func (s *Store) UpsertPosition(ctx context.Context, pos PositionUpdate) error {
 		 VALUES ($1,$2,$3,$4,NOW())
 		 ON CONFLICT (user_alias, symbol) DO UPDATE SET quantity=EXCLUDED.quantity, avg_price=EXCLUDED.avg_price, updated_at=NOW()`,
 		pos.UserAlias, pos.Symbol, pos.Quantity, pos.AvgPrice)
-	return err
+	if err != nil {
+		return fmt.Errorf("upsert position %s/%s: %w", pos.UserAlias, pos.Symbol, err)
+	}
+	return nil
 }
 
 func (s *Store) GetPortfolioState(ctx context.Context, userAlias, symbol string) (PortfolioStateResponse, error) {
-	var resp PortfolioStateResponse
-	resp.Type = "portfolio_state_response"
-	resp.UserAlias = userAlias
-	resp.Symbol = symbol
-
-	// 获取账户余额
-	err := s.pool.QueryRow(ctx, `SELECT balance FROM account_state WHERE user_alias=$1`, userAlias).Scan(&resp.Balance)
-	if err != nil {
-		return resp, fmt.Errorf("account query: %w", err)
+	resp := PortfolioStateResponse{
+		Type:      MsgPortfolioState,
+		UserAlias: userAlias,
+		Symbol:    symbol,
 	}
-
-	// 获取持仓
-	var qty, avg float64
-	err = s.pool.QueryRow(ctx,
-		`SELECT quantity, avg_price FROM positions WHERE user_alias=$1 AND symbol=$2`,
-		userAlias, symbol).Scan(&qty, &avg)
+	err := s.pool.QueryRow(ctx, `
+		SELECT a.balance,
+		       COALESCE(p.quantity, 0), COALESCE(p.avg_price, 0),
+		       COALESCE(r.per_symbol_max_shares, $3)
+		FROM account_state a
+		LEFT JOIN positions p ON p.user_alias = a.user_alias AND p.symbol = $2
+		LEFT JOIN risk_config r ON r.user_alias = a.user_alias
+		WHERE a.user_alias = $1`,
+		userAlias, symbol, defaultPerSymbolMaxShares,
+	).Scan(&resp.Balance, &resp.Position, &resp.AvgCost, &resp.MaxLimit)
 	if err != nil {
-		// 无持仓也视为正常，返回0
-		if err != pgx.ErrNoRows {
-			return resp, fmt.Errorf("position query: %w", err)
-		}
-		qty = 0
+		return resp, fmt.Errorf("portfolio state query: %w", err)
 	}
-	resp.Position = qty
-	resp.AvgCost = avg
-
-	// 获取最大持仓限制
-	var maxShares float64
-	err = s.pool.QueryRow(ctx,
-		`SELECT per_symbol_max_shares FROM risk_config WHERE user_alias=$1`,
-		userAlias).Scan(&maxShares)
-	if err != nil {
-		maxShares = 200 // 默认值
-	}
-	resp.MaxLimit = maxShares
 	return resp, nil
 }
 

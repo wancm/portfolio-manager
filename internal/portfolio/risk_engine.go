@@ -5,15 +5,29 @@ import (
 	"fmt"
 )
 
+const (
+	actionBuy  = "BUY"
+	actionSell = "SELL"
+)
+
+type portfolioQuerier interface {
+	GetRiskConfig(ctx context.Context, userAlias string) (RiskConfig, error)
+	GetPortfolioState(ctx context.Context, userAlias, symbol string) (PortfolioStateResponse, error)
+	IsBanned(ctx context.Context, userAlias, symbol string) (bool, error)
+	IsHalted(ctx context.Context, userAlias string) (bool, error)
+	GetTotalMarketValue(ctx context.Context, userAlias string) (float64, error)
+}
+
 type RiskEngine struct {
-	store *Store
+	store portfolioQuerier
 }
 
 func NewRiskEngine(store *Store) *RiskEngine {
 	return &RiskEngine{store: store}
 }
 
-func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, action string, quantity, price float64) (bool, string, float64) {
+func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, action string,
+	quantity, price float64) (allowed bool, reason string, adjustedQty float64) {
 	cfg, err := r.store.GetRiskConfig(ctx, userAlias)
 	if err != nil {
 		return false, fmt.Sprintf("config error: %v", err), 0
@@ -26,7 +40,7 @@ func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, actio
 	}
 
 	// 1. 禁止卖空
-	if action == "SELL" && state.Position <= 0 {
+	if action == actionSell && state.Position <= 0 {
 		return false, "short selling not allowed", 0
 	}
 
@@ -44,7 +58,7 @@ func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, actio
 	if err != nil {
 		return false, fmt.Sprintf("halt check error: %v", err), 0
 	}
-	if halted && action == "BUY" {
+	if halted && action == actionBuy {
 		return false, "trading halted due to loss limit", 0
 	}
 
@@ -56,7 +70,7 @@ func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, actio
 		return false, fmt.Sprintf("order value exceeds limit, max qty ~%.2f", adjQty), adjQty
 	}
 
-	if action == "BUY" {
+	if action == actionBuy {
 		// 5. 单标的上限 — shares cap AND pct cap; lower binding cap holds
 		newPosition := state.Position + quantity
 
@@ -96,7 +110,7 @@ func (r *RiskEngine) ValidateOrder(ctx context.Context, userAlias, symbol, actio
 	}
 
 	// 卖出时检查数量不超过持仓
-	if action == "SELL" && quantity > state.Position {
+	if action == actionSell && quantity > state.Position {
 		return false, fmt.Sprintf("sell quantity exceeds holding (%.2f)", state.Position), state.Position
 	}
 

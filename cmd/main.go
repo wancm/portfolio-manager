@@ -57,8 +57,8 @@ func main() {
 	store := portfolio.NewStore(pool)
 	risk := portfolio.NewRiskEngine(store)
 
-	handler := portfolio.NewTraderWSHandler(store, risk, shared.AppLogger)
-	http.Handle("/ws", handler)
+	mux := http.NewServeMux()
+	mux.Handle("/ws", portfolio.NewTraderWSHandler(store, risk, shared.AppLogger))
 
 	// 启动 Broker WebSocket 客户端
 	brokerURL := os.Getenv("BROKER_WS_URL")
@@ -77,7 +77,7 @@ func main() {
 	}()
 
 	// 启动 Trader WebSocket 服务
-	srv := &http.Server{Addr: ":8081"}
+	srv := &http.Server{Addr: ":8081", Handler: mux}
 	go func() {
 		shared.AppLogger.Info("Portfolio Manager listening on :8081")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
