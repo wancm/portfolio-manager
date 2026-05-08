@@ -20,26 +20,36 @@ func main() {
 	// first error it hits, which trips even when an earlier path loaded
 	// successfully — so try each path independently and stop on the first hit.
 	envCandidates := []string{
-		"configs/.env",
-		"../configs/.env",
-		"../../configs/.env",
-		"../../../configs/.env",
+		".env",
+		"../.env",
+		"../../.env",
+		"../../../.env",
 	}
 
 	envLoaded := false
 	for _, p := range envCandidates {
 		if err := godotenv.Load(p); err == nil {
-			shared.AppLogger.Info("loaded env file", "path", p)
 			envLoaded = true
 			break
 		}
 	}
-	if !envLoaded {
+
+	loggerWSURL := os.Getenv("LOGGER_WS_URL")
+	if loggerWSURL == "" {
+		loggerWSURL = "ws://127.0.0.1:9500"
+	}
+	wsLogger, logFwd := shared.NewLoggerWithWS(os.Getenv("LOG_FORMAT"), loggerWSURL, "portfolio-manager")
+	shared.AppLogger = wsLogger
+
+	if envLoaded {
+		shared.AppLogger.Info("loaded env file")
+	} else {
 		shared.AppLogger.Info(".env not found in any candidate path, using system environment variables")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go logFwd.Run(ctx)
 
 	dbConn := os.Getenv("DB_CONN")
 	if dbConn == "" {
